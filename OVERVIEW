@@ -1,0 +1,99 @@
+# Active Directory Home Lab — Installation Notes
+
+**Project:** AD Home Lab with Windows 11, Windows Server, Splunk, and Kali Linux
+**Goal:** Build a simulated enterprise AD environment, monitor it with Splunk, then test attack paths from Kali.
+
+---
+
+## 1. Prerequisites
+
+- Hypervisor: VMware Workstation/Fusion or VirtualBox (either works fine)
+- ISOs needed:
+  - Windows Server 2022 (or 2019) — evaluation ISO from Microsoft
+  - Windows 11 — evaluation ISO or standard ISO
+  - Kali Linux — official ISO from kali.org
+  - Splunk Enterprise (free trial, installed on Windows Server or a separate Linux VM)
+- Host machine: at least 16GB RAM recommended (4 VMs running)
+- Create a dedicated **internal/host-only virtual network** so the lab is isolated from your home network
+
+## 2. Network Planning
+
+Before installing anything, decide your addressing scheme, e.g.:
+
+| VM | Role | Static IP |
+|---|---|---|
+| Windows Server | Domain Controller + DNS | 192.168.50.10 |
+| Windows 11 | Domain-joined client | 192.168.50.20 |
+| Splunk | SIEM (can be on Server or its own VM) | 192.168.50.30 |
+| Kali Linux | Attacker box | 192.168.50.40 |
+
+Attach all VMs to the same virtual network (Host-Only or a custom NAT network), not your home LAN.
+
+---
+
+## 3. Install & Configure Windows Server (Domain Controller)
+
+1. Install Windows Server from ISO — choose "Desktop Experience" for a GUI.
+2. Set a static IP matching your network plan.
+3. Rename the computer (e.g., `DC01`) and reboot.
+4. Open **Server Manager → Add Roles and Features**.
+5. Install the **Active Directory Domain Services (AD DS)** role.
+6. After install, click the notification flag → **Promote this server to a domain controller**.
+7. Choose **Add a new forest**, enter a root domain name (e.g., `lab.local`).
+8. Set the Directory Services Restore Mode (DSRM) password.
+9. Accept default NetBIOS name, paths, and let it install DNS automatically.
+10. Server reboots and becomes the domain controller.
+
+---
+
+## 4. Populate Active Directory
+
+1. Open **Active Directory Users and Computers (ADUC)**.
+2. Create Organizational Units (OUs) — e.g., `Employees`, `IT`, `Servers`.
+3. Create several test user accounts with varying privilege levels (regular user, admin, service account).
+4. Optionally create Security Groups and assign users to them.
+5. (Optional, for realism/vulnerabilities to test later) Set a few weak passwords, unconstrained delegation, or misconfigured permissions intentionally — this is what you'll be attacking later from Kali.
+
+---
+
+## 5. Join Windows 11 to the Domain
+
+1. Install Windows 11 on its own VM.
+2. Set a static IP, and set its **DNS server to the DC's IP** (this is critical — the client must resolve the domain via the DC).
+3. Go to **Settings → Accounts → Access work or school → Connect → Join this device to a local Active Directory domain**.
+4. Enter the domain name (`lab.local`), then domain admin credentials when prompted.
+5. Reboot and log in with a domain user account to confirm the join worked.
+
+---
+
+## 6. Install and Configure Splunk (SIEM)
+
+1. Install **Splunk Enterprise** on its VM (or on the Server VM if resources are limited).
+2. During setup, create the admin account and note the management port (default 8000 for web UI, 9997 for forwarding).
+3. Log into the Splunk web UI (`http://<splunk-ip>:8000`).
+4. On the **Domain Controller** and **Windows 11 client**, install the **Splunk Universal Forwarder**.
+5. Configure the forwarder to send Windows Event Logs (Security, System, Application) to the Splunk indexer IP on port 9997.
+6. In Splunk, create/verify an index (e.g., `wineventlog`) and confirm data is flowing in via **Search & Reporting**.
+7. This lets you monitor authentication events, logon failures, and other activity generated later during the Kali attack phase.
+
+---
+
+## 7. Set Up Kali Linux (Attacker Box)
+
+1. Install Kali Linux on its VM, attached to the same isolated network.
+2. Set a static IP within the lab subnet.
+3. Confirm connectivity: `ping` the DC and the Windows 11 client.
+4. Update tools: `sudo apt update && sudo apt full-upgrade -y`
+5. Verify key AD attack tools are present/updated: `crackmapexec`/`netexec`, `impacket` scripts, `bloodhound`, `enum4linux-ng`, `responder`.
+
+---
+
+## 8. Validate the Lab Before Attacking
+
+- [ ] DC promotes successfully and DNS resolves `lab.local`
+- [ ] Windows 11 client is domain-joined and can log in with a domain account
+- [ ] Splunk is receiving Windows Event Logs from both the DC and client
+- [ ] Kali can reach both Windows VMs on the network (ping + port scan)
+- [ ] Snapshot all VMs at this clean state before starting offensive testing, so you can roll back after each exercise
+
+
