@@ -1,0 +1,95 @@
+
+# Splunk VM — Network Configuration (Troubleshooting Log)
+
+Setting a static IP on the Splunk (Ubuntu) VM using netplan, on a VirtualBox **NAT Network**.
+
+## Goal
+Give the Splunk VM a static IP so it doesn't change on reboot, while keeping internet access and reachability from other lab VMs.
+
+---
+
+## Attempt 1 — Fix YAML syntax errors
+Initial `netplan apply` failed with `Invalid YAML: inconsistent indentation`.
+
+Issues found in `/etc/netplan/00-installer-config.yaml`:
+- `-to: default` → missing space after the dash (needs `- to: default`)
+- `via:` was indented deeper than `to:` — both need to align in the same column
+- `version: 2` was nested under `ethernets:` instead of under `network:`
+
+**Fix:** corrected indentation so `to`/`via` align, and `version` sits at the same level as `ethernets`.
+
+## Attempt 2 — Find the real gateway
+Config still used placeholder values (`127.0.0.1` for both address and gateway — invalid).
+
+Ran:
+```bash
+ip route
+ip a
+```
+This confirmed the actual assigned IP (`10.0.2.15/24`) and initial gateway (`10.0.2.2`) while still on DHCP.
+
+## Attempt 3 — Boot hang after applying static config
+After `netplan apply`, boot got stuck on `systemd-networkd-wait-online.service`.
+
+**Cause:** `dhcp6: true` was waiting on an IPv6 address that never comes (NAT doesn't provide one).
+**Fix:** set `dhcp6: false`.
+
+## Attempt 4 — "Network is unreachable"
+`ping 8.8.8.8` failed even after applying. `ip route` showed no `default via` line at all.
+
+**Cause:** typo in the config — gateway was set to:
+```yaml
+via: 10.0.2.15/24
+```
+(pointed to the VM's own IP, with an invalid subnet mask on a gateway field).
+
+**Fix:** changed to `via: 10.0.2.2` — matched the gateway seen earlier under DHCP.
+
+## Attempt 5 — Still "Network is unreachable" (real root cause)
+Reapplied with `via: 10.0.2.2`, still no connectivity.
+
+**Cause:** the VM's adapter was attached to a **NAT Network**, not plain **NAT**. These use different gateways:
+- Plain NAT (per-VM) → gateway `10.0.2.2`
+- NAT Network (shared) → gateway `10.0.2.1`
+
+**How it was confirmed:** temporarily set `dhcp4: yes`, applied, then checked `ip route` — DHCP handed out `default via 10.0.2.1`.
+
+**Fix:** updated `via: 10.0.2.1` and switched `dhcp4` back to `no`.
+
+---
+
+## Final Working Config
+```yaml
+network:
+  ethernets:
+    enp0s3:
+      dhcp4: no
+      addresses: [10.0.2.3/24]
+      nameservers:
+        addresses: [8.8.8.8]
+      routes:
+        - to: default
+          via: 10.0.2.1
+      dhcp6: false
+      match:
+        macaddress: 08:00:27:8d:c6:7e
+      set-name: enp0s3
+  version: 2
+```
+
+Verified with:
+```bash
+sudo netplan apply
+ip route          # confirmed default via 10.0.2.1
+ping -c 3 8.8.8.8 # 0% packet loss
+ping google.com   # resolves + replies
+```
+
+---
+
+## Key Takeaways
+- `netplan generate` catches YAML syntax errors before `apply` — use it first.
+- YAML list items need a space after `-`, and nested keys must align in the same column as their siblings.
+- The gateway is not something you invent — always confirm it via `ip route` while on DHCP before locking in a static config.
+- **Plain NAT vs. NAT Network in VirtualBox use different default gateways** (`10.0.2.2` vs `10.0.2.1`) — don't assume they're the same.
+- `ping` with no `-c` flag runs forever — use `Ctrl+C` to stop it or `ping -c N` for a fixed count.
